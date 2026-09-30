@@ -24,21 +24,21 @@ export function publicQueries(t:Target,evidence:Evidence[]):string[] {
  return [`${terms} original official source`,`${terms} counter evidence criticism suspension total cost`].map(q=>q.slice(0,300)).slice(0,gapsFor(evidence).length>0?2:1);
 }
 export function searchConfigured():boolean {
- return process.env.RESEARCH_SEARCH_ENABLED==='true'&&!!process.env.RESEARCH_SEARCH_URL;
+ return process.env.RESEARCH_SEARCH_ENABLED==='true'&&!!process.env.RESEARCH_SEARCH_URL&&!!process.env.RESEARCH_SOURCE_HOSTS?.trim();
 }
 export async function searchPublic(runId:string,query:string,beforeAttempt?:(db:Db)=>Promise<void>) {
  if(!searchConfigured()||!config.modelCallsEnabled||process.env.RESEARCH_LIVE_ENABLED!=='true')throw new Error('not_configured');
  if(config.allowPrivateNetworkFetch||config.egressProxyUrl)throw new Error('unsafe_network_configuration');
  const endpoint=process.env.RESEARCH_SEARCH_URL!;
- if(new URL(endpoint).protocol!=='https:')throw new Error('unsafe_search_endpoint');
- await assertPublicUrl(endpoint,false,false);
+ const endpointUrl=new URL(endpoint);
+ if(endpointUrl.protocol!=='https:'||endpointUrl.username||endpointUrl.password)throw new Error('unsafe_search_endpoint');
  const r=await paidRequest({beforeAttempt,service:'research-search',purpose:'research-v1',subject:runId,identity:{runId,query,endpoint},requestSummary:{scope:'opted-in-public-terms-only'}},async()=>{
   const response=await guardedFetch(endpoint,{route:'direct',method:'POST',headers:{'content-type':'application/json',...(process.env.RESEARCH_SEARCH_KEY?{authorization:`Bearer ${process.env.RESEARCH_SEARCH_KEY}`}:{})},body:JSON.stringify({query,limit:3}),maxBytes:50000,timeoutMs:15000,maxRedirects:0});
   if(response.status!==200)throw new Error('search_failed');
   return {response:resultSchema.parse(JSON.parse(response.text()))};
  });
  const result=resultSchema.parse(r.response);await completeReceipt(sql,r.receiptId);
- const allowed=(process.env.RESEARCH_SOURCE_HOSTS??'').split(',').map(x=>x.trim()).filter(Boolean);
+ const allowed=(process.env.RESEARCH_SOURCE_HOSTS??'').split(',').map(x=>x.trim().toLowerCase()).filter(Boolean);
  const valid=[];
  for(const item of result.results){const url=new URL(item.url);if(url.protocol!=='https:'||url.username||url.password||!allowed.includes(url.hostname))continue;await assertPublicUrl(item.url,false,false);valid.push(item);}
  return {results:valid,receiptId:r.receiptId};

@@ -2,20 +2,21 @@
 CREATE TABLE research_targets (
  id text PRIMARY KEY, version integer NOT NULL DEFAULT 1, question text NOT NULL,
  domain text NOT NULL, hypothesis text, public_terms text[] NOT NULL DEFAULT '{}', terms text[] NOT NULL DEFAULT '{}',
- status text NOT NULL DEFAULT 'active' CHECK(status IN ('active','paused')),
+ scope jsonb NOT NULL DEFAULT '{}', status text NOT NULL DEFAULT 'active' CHECK(status IN ('active','paused')),
  created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE TABLE research_evidence (
- id text PRIMARY KEY, identity text NOT NULL, content_hash text NOT NULL,
+ id text PRIMARY KEY, identity text NOT NULL, content_hash text NOT NULL, version_seq integer NOT NULL,
  previous_id text REFERENCES research_evidence(id), article_id text, article_revision integer,
  title text NOT NULL, url text NOT NULL, source text NOT NULL, origin_key text NOT NULL,
  body text NOT NULL, claims jsonb NOT NULL DEFAULT '[]', domain text NOT NULL DEFAULT 'unknown',
- published_at timestamptz, occurred_at timestamptz, time_precision text NOT NULL DEFAULT 'unknown',
+ published_at timestamptz, occurred_at timestamptz, time_precision text NOT NULL DEFAULT 'unknown', time_metadata jsonb NOT NULL DEFAULT '{}',
  available_at timestamptz NOT NULL DEFAULT now(), processed_at timestamptz NOT NULL DEFAULT now(),
  mode text NOT NULL CHECK(mode IN ('demo','source')), fetch_status text NOT NULL DEFAULT 'ok',
- UNIQUE(identity, content_hash)
+ UNIQUE(identity, version_seq)
 );
 CREATE INDEX research_evidence_available ON research_evidence(available_at DESC);
+CREATE INDEX research_evidence_identity_version ON research_evidence(identity,version_seq DESC);
 CREATE TABLE research_runs (
  id text PRIMARY KEY, target_id text NOT NULL REFERENCES research_targets(id), target_version integer NOT NULL,
  input_key text NOT NULL, snapshot jsonb NOT NULL, status text NOT NULL DEFAULT 'queued'

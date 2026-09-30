@@ -61,6 +61,8 @@ jobs:
         run: |
           node scripts/migrate.ts
           node scripts/seed.ts --topics-only
+      - name: Synthetic research flows (no external calls)
+        run: node scripts/research-demo.ts
       - name: Smoke check of the built site
         # The site itself runs with collection and model calls off (the tests below use local stubs).
         env:
