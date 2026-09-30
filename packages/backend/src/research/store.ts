@@ -63,7 +63,7 @@ export async function requestRun(targetId:string, trigger='manual', queue=true):
  const evidence=await recall(t,tx); const snapshot={target:t,evidenceIds:evidence.map(e=>e.id).sort(),cutoff:new Date().toISOString()};
  const external=process.env.RESEARCH_FETCH_ENABLED==='true'||(process.env.RESEARCH_SEARCH_ENABLED==='true'&&t.public_terms.length>0);
  const refreshEpoch=external?Math.floor(Date.now()/3600000):'corpus';
- const inputKey=hash([t.version,snapshot.evidenceIds,process.env.RESEARCH_PROVIDER??'none','research-v1',refreshEpoch]);
+ const inputKey=hash([t.version,snapshot.evidenceIds,process.env.RESEARCH_PROVIDER??'none','research-v2',refreshEpoch]);
  const [r]=await tx`INSERT INTO research_runs(id,target_id,target_version,input_key,snapshot,trigger)
  VALUES(${randomUUID()},${t.id},${t.version},${inputKey},${tx.json(snapshot as never)},${trigger})
  ON CONFLICT(target_id,target_version,input_key) DO UPDATE SET input_key=EXCLUDED.input_key RETURNING *`;
