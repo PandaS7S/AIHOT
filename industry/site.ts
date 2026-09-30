@@ -4,27 +4,27 @@
 
 export const SITE = {
   /** 站名：导航、页面标题、分享图、RSS、MCP、后台都用它。 */
-  name: "MyHOT",
+  name: "Research Desk",
   /**
    * 行业词：拼进默认说法里，比如“AI 日报”“AI 动态”。
    * 改成“法律”“HR”“黄金”之类，页面上就会变成“法律日报”“法律动态”。
    */
   subject: "AI",
   /** 首页的完整标题（浏览器标签、搜索结果）。 */
-  homeTitle: "MyHOT — AI 行业动态 · 每日精选与日报",
+  homeTitle: "Research Desk（工作名）— 持续研究工作台",
   /** 一句话介绍：搜索引擎、分享卡片、RSS、llms.txt 会用。 */
   description: "自动盯住上百个信源，用模型摘要、打分、精选，把同一件事的多篇报道归到一起，每天早上出一份日报。",
   /** 首页左上角和侧边栏下面的一行小字。 */
-  tagline: "值得关注的 AI 动态",
+  tagline: "持续研究工作台 · 工作名",
   /** 界面语言（HTML lang、og:locale）。 */
   locale: "zh-CN",
   /** 默认域名，只在没设置 SITE_URL 时使用。 */
   defaultUrl: "http://localhost:3000",
   /**
-   * MCP 工具名的前缀（小写字母、数字、下划线），工具会叫 myhot_get_latest、myhot_search……
+   * MCP 工具名的前缀（小写字母、数字、下划线），工具会叫 researchdesk_get_latest、researchdesk_search……
    * 已经有人接入后就不要再改。
    */
-  mcpPrefix: "myhot",
+  mcpPrefix: "researchdesk",
   /** 对外联系邮箱（选填）：使用规则、llms.txt、响应头里会写。 */
   contactEmail: null as string | null,
   /** 页脚的一行小字（选填）。 */
@@ -33,12 +33,12 @@ export const SITE = {
   icp: null as string | null,
   /** 结构化数据里的网站运营者（搜索引擎用）。 */
   organization: {
-    name: "MyHOT",
+    name: "Research Desk",
     /** 创始人（选填）：{ name, url, description }。 */
     founder: null as null | { name: string; url?: string; description?: string },
   },
   /** 抓取信源时报上的名字（User-Agent 里用），不要冒用别的站。 */
-  crawlerName: "MyHOTBot",
+  crawlerName: "Research DeskBot",
 } as const;
 
 /** 关于页的文案。数字（信源数、收录数、精选数、日报期数）来自站内实时统计，不用写在这里。 */

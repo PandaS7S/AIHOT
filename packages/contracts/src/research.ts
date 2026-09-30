@@ -1,0 +1,10 @@
+/** Private HTTP DTOs. No backend credentials or data access in the web bundle. */
+export interface ResearchTarget {id:string;version:number;question:string;domain:string;hypothesis:string|null;status:string}
+export interface ResearchCitation {evidenceId:string;quote:string}
+export interface ResearchFinding {text:string;relation:string;citations:ResearchCitation[];assumption:boolean}
+export interface ResearchOutput {findings:ResearchFinding[];changes:string[];alternatives:ResearchFinding[];conflicts:string[];unknowns:string[];nextChecks:string[]}
+export interface ResearchBrief {id:string;run_id:string;target_id:string;target_version:number;input_ids:string[];output:ResearchOutput;mode:string;created_at:string;question?:string}
+export interface ResearchRun {id:string;target_id:string;status:string;calls:number;max_calls:number;stop_reason:string|null;created_at:string;finished_at:string|null;steps:{step:string;status:string}[]}
+export interface ResearchEvidence {id:string;title:string;url:string;source:string;origin_key:string;body:string;published_at:string|null;occurred_at:string|null;available_at:string;time_precision:string;previous_id:string|null;mode:string;claims:{text:string;kind:string;value:number|null;unit:string|null;period:string|null;consensus:number|null;consensusSource:string|null}[]}
+export interface ResearchOverview {targets:ResearchTarget[];radar:ResearchBrief[];runs:ResearchRun[];exploration:{id:string;title:string;source:string;url:string;mode:string;available_at:string;published_at:string|null;previous_id:string|null}[];sourceHealth:{id:string;name:string;health:string;last_fetch_at:string|null;last_ok_at:string|null;fail_count:number}[];coverage:{source:string;mode:string;versions:number;last_success:string}[];capabilities:Record<string,string>;timezone:string}
+export interface ResearchDetail {target:ResearchTarget;briefs:ResearchBrief[];runs:ResearchRun[];evidence:ResearchEvidence[];actions:{id:number;action:string;note:string|null;created_at:string}[]}

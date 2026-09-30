@@ -5,7 +5,7 @@ import type { z } from "zod";
 import { config, credential } from "../config.ts";
 import { sha256 } from "../lib/ids.ts";
 import { completeReceipt, paidRequest, ProviderRejectedError, rejectReceivedResponse } from "./receipts.ts";
-import { sql } from "../db.ts";
+import { sql, type Db } from "../db.ts";
 
 export interface ModelSpec {
   key: string;
@@ -85,6 +85,7 @@ export const MODELS: Record<string, ModelSpec> = {
 export type ContentPart = { type: "text"; text: string } | { type: "image_url"; image_url: { url: string } };
 
 export interface ChatJsonOptions<S extends z.ZodType> {
+  beforeAttempt?: (db: Db) => Promise<void>;
   model: string;
   purpose: string;
   subject: string;
@@ -184,6 +185,7 @@ export async function chatJson<S extends z.ZodType>(opts: ChatJsonOptions<S>): P
 
   const receipt = await paidRequest(
     {
+      beforeAttempt: opts.beforeAttempt,
       service: spec.service,
       model: spec.model,
       purpose: opts.purpose,

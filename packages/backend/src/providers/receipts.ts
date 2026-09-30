@@ -48,6 +48,8 @@ export interface CallOutcome {
 }
 
 export interface ReceiptRequest {
+  /** Additional transactional reservation, invoked only for a NEW outbound attempt, never reuse. */
+  beforeAttempt?: (db: Db) => Promise<void>;
   service: string;
   model?: string | null;
   purpose: string;
@@ -124,12 +126,14 @@ export async function paidRequest(req: ReceiptRequest, call: () => Promise<CallO
       if (existing.status === "unknown") return { kind: "unknown" as const, row: existing };
       // failed: the provider did not take the request, or its answer was unusable; a new attempt is allowed.
       await checkBudget(tx, req.service);
+      await req.beforeAttempt?.(tx);
       const [r] = await tx<{ attempts: number }[]>`
         UPDATE receipts SET status = 'pending', attempts = attempts + 1, error = NULL, updated_at = now() WHERE id = ${existing.id} RETURNING attempts`;
       const attemptId = await startAttempt(tx, existing.id, r!.attempts, req);
       return { kind: "call" as const, id: existing.id, attemptId };
     }
     await checkBudget(tx, req.service);
+    await req.beforeAttempt?.(tx);
     const [row] = await tx<{ id: number }[]>`
       INSERT INTO receipts (logical_key, service, model, purpose, subject, status, request, attempts)
       VALUES (${logicalKey}, ${req.service}, ${req.model ?? null}, ${req.purpose}, ${req.subject ?? null}, 'pending',

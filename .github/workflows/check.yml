@@ -5,7 +5,7 @@ name: Check
 
 on:
   push:
-    branches: [main]
+    branches: [main, research-workbench]
   pull_request:
   workflow_dispatch:
 
@@ -30,6 +30,12 @@ jobs:
         options: >-
           --health-cmd "pg_isready -U postgres" --health-interval 2s --health-timeout 5s --health-retries 30
     env:
+      RESEARCH_LIVE_ENABLED: "false"
+      RESEARCH_FETCH_ENABLED: "false"
+      RESEARCH_PROVIDER: "none"
+      FEISHU_CONTENT_PUSH_ENABLED: "false"
+      FEISHU_INTERNAL_ENABLED: "false"
+      INDEXNOW_SUBMIT_ENABLED: "false"
       DATABASE_URL: postgres://postgres:ci@127.0.0.1:5432/aihot_ci
       SITE_URL: http://127.0.0.1:3000
       API_BASE_URL: http://127.0.0.1:3001
