@@ -1,3 +1,11 @@
+# Research Desk（工作名）
+
+本 fork 增加单人私人研究工作台，面向政治、宏观、BTC、美股、AI 与创业问题。入口 `/admin/research`；包括变化雷达、专题、证据版本、反例补查、任务状态与私人导出。真实服务默认关闭，当前代码与合成演示不代表已经部署或模型研究质量已验证。见 [私人研究配置与边界](docs/research.md)。
+
+以下保留上游框架说明及归属。
+
+---
+
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/assets/banner-dark.png">
@@ -184,8 +192,3 @@ AIHOT 曾经只是我无数个深夜里，一个很小、很小的念头。
 ---
 
 <sub>**In English:** AIHOT ([aihot.news](https://aihot.news)) is an AI news site that collects from many sources, lets a language model filter and score every item twice, writes Chinese headlines and summaries, clusters reports of the same story into one event, ranks events by how many independent sources discuss them, and publishes a daily briefing. This repository is its complete framework, including every prompt and threshold. Hand it to your coding agent with `AGENTS.md` and `docs/customize.md` to turn it into a news site for your own field. The documentation is in Chinese.</sub>
-# Research Desk（工作名）
-
-本 fork 增加单人私人研究工作台，面向政治、宏观、BTC、美股、AI 与创业问题。入口 `/admin/research`；包括变化雷达、专题、证据版本、反例补查、任务状态与私人导出。真实服务默认关闭，当前代码与合成演示不代表已经部署或模型研究质量已验证。见 [私人研究配置与边界](docs/research.md)。
-
-以下保留上游框架说明及归属。

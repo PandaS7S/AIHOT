@@ -9,10 +9,11 @@ import { passwordLogin, SESSION_COOKIE } from "@aihot/backend/admin/auth";
 import { stopBoss } from "@aihot/backend/jobs/queue";
 import { upsertMaterial } from "@aihot/backend/content/materials";
 import { publishArticle } from "@aihot/backend/publication/publish";
+import type { V1ItemsResult } from "@aihot/backend/publication/v1";
 import { BudgetExceededError, completeReceipt, paidRequest } from "@aihot/backend/providers/receipts";
 import { executeRun, fixtureAnalysis, reserveCall } from "@aihot/backend/research/engine";
 import { validateBrief, type Brief, type Evidence, type Target } from "@aihot/backend/research/schema";
-import { createTarget, detail, ingestEvidence, questionTerms, recall, requestRun, syncCorpus, updateTarget } from "@aihot/backend/research/store";
+import { createTarget, detail, ingestEvidence, overview, questionTerms, recall, requestRun, scheduleTargets, syncCorpus, updateTarget } from "@aihot/backend/research/store";
 import { gapsFor, publicQueries } from "@aihot/backend/research/search";
 import { buildApp } from "../apps/api/src/app.ts";
 
@@ -51,11 +52,10 @@ afterEach(async () => {
     await sql`DELETE FROM sources WHERE id = ANY(${sourceIds}::text[])`;
     sourceIds.length = 0;
   }
+  for (const key of Object.keys(process.env)) if (key.startsWith("RESEARCH_")) delete process.env[key];
   process.env.RESEARCH_LIVE_ENABLED = "false";
   process.env.RESEARCH_FETCH_ENABLED = "false";
   process.env.RESEARCH_SEARCH_ENABLED = "false";
-  delete process.env.RESEARCH_PROVIDER;
-  delete process.env.RESEARCH_SEARCH_URL;
 });
 after(async () => {
   await app.close();
@@ -99,11 +99,24 @@ async function auth() {
   assert.equal(me.statusCode, 200, me.body);
   return { cookie, "x-csrf-token": String(me.json().csrf), origin: new URL(config.siteUrl).origin };
 }
+function assertEmptyPublicSearch(result: V1ItemsResult, query: string, privateValues: string[]) {
+  assert.equal(result.query.q, query, "the public API deliberately echoes the caller's search query");
+  assert.deepEqual(result.items, [], "the search result set contains no private or publicly ineligible material");
+  assert.equal(result.page.count, 0);
+  const responseWithoutQueryEcho = JSON.stringify({ ...result, query: { ...result.query, q: undefined } });
+  for (const privateValue of privateValues) {
+    assert.ok(!responseWithoutQueryEcho.includes(privateValue), "private data must not enter any returned content outside the explicit query echo");
+  }
+}
 
 test("corrected source versions leave old briefs and their original citations intact", async () => {
   const { target: t, marker } = await target("macro");
   const url = `https://example.org/${marker}/release`;
-  const first = await evidence(marker, { url, domain: "macro", title: `原始统计 ${marker}`, body: `统计值为 2.8 ${marker}`, publishedAt: "2001-01-01T00:00:00Z", timePrecision: "day" });
+  // Both version bodies exceed the fixture's 250-character excerpt. An export containing only the
+  // analysis/citation snippets cannot satisfy the full-source preservation assertions below.
+  const oldBody = `统计值为 2.8 ${marker}。${"合成统计背景，用于版本保存测试。".repeat(40)}原始版本全文末尾 ${marker}`;
+  const revisedBody = `更正后统计值为 2.4 ${marker}。${"合成更正背景，用于版本保存测试。".repeat(40)}更正版本全文末尾 ${marker}`;
+  const first = await evidence(marker, { url, domain: "macro", title: `原始统计 ${marker}`, body: oldBody, publishedAt: "2001-01-01T00:00:00Z", timePrecision: "day" });
   const duplicate = await evidence(marker, { url, domain: "macro", title: first.title, body: first.body, publishedAt: "2001-01-01T00:00:00Z", timePrecision: "day" });
   assert.equal(duplicate.id, first.id);
   assert.equal(duplicate.available_at.toISOString(), first.available_at.toISOString(), "re-import must not pretend the source was available earlier");
@@ -113,7 +126,7 @@ test("corrected source versions leave old briefs and their original citations in
   const oldBrief = await briefFor(oldRun);
   const oldOutput = JSON.stringify(oldBrief.output);
 
-  const revised = await evidence(marker, { url, domain: "macro", title: `更正统计 ${marker}`, body: `更正后统计值为 2.4 ${marker}`, publishedAt: "2001-01-01T00:00:00Z", timePrecision: "day" });
+  const revised = await evidence(marker, { url, domain: "macro", title: `更正统计 ${marker}`, body: revisedBody, publishedAt: "2001-01-01T00:00:00Z", timePrecision: "day" });
   assert.notEqual(revised.id, first.id);
   assert.equal(revised.previous_id, first.id);
   assert.deepEqual((await recall(t)).map((e) => e.id), [revised.id]);
@@ -128,6 +141,46 @@ test("corrected source versions leave old briefs and their original citations in
   assert.deepEqual((await briefFor(oldRun)).input_ids, [first.id]);
   assert.equal(JSON.stringify((await briefFor(oldRun)).output), oldOutput);
   assert.deepEqual((await runState(oldRun)).snapshot.evidenceIds, [first.id], "new evidence cannot enter the old run snapshot");
+  const edited = await updateTarget(t.id, { question: `更新后的合成研究问题 ${marker}`, domain: "macro", terms: [marker] });
+  assert.ok(edited);
+  const exported = await app.inject({ method: "GET", url: `/api/admin/research/targets/${t.id}/export?format=markdown`, headers: await auth() });
+  assert.equal(exported.statusCode, 200, exported.body);
+  assert.match(String(exported.headers["content-type"]), /^text\/markdown/);
+  assert.equal(exported.headers["cache-control"], "private, no-store");
+  assert.ok(exported.body.includes(edited.question));
+  assert.ok(exported.body.includes(t.question), "old briefs export the frozen question rather than replacing it with the edited question");
+  assert.ok(exported.body.includes(first.id) && exported.body.includes(revised.id));
+  assert.ok(exported.body.includes(oldBody), "the old evidence version is exported in full, beyond its citation excerpt");
+  assert.ok(exported.body.includes(revisedBody), "the corrected evidence version is also exported in full");
+});
+
+test("a source reverting from A to B to A creates a third immutable version rather than reviving the first", async () => {
+  const { target: t, marker } = await target();
+  const url = `https://example.org/${marker}/synthetic-reverting-source`;
+  const original = { url, title: `合成 A 内容 ${marker}`, body: `Synthetic release A ${marker}` };
+  const first = await evidence(marker, original);
+  const firstRun = await runFor(t);
+  await executeRun(firstRun, true);
+  const second = await evidence(marker, { url, title: `合成 B 内容 ${marker}`, body: `Synthetic release B ${marker}` });
+  const secondRun = await runFor(t);
+  const reverted = await evidence(marker, original);
+  const latestDuplicate = await evidence(marker, original);
+  assert.notEqual(reverted.id, first.id, "the historical A content is not the current acquisition of A");
+  assert.notEqual(reverted.id, second.id);
+  assert.equal(reverted.previous_id, second.id);
+  assert.equal(latestDuplicate.id, reverted.id, "only a repeat of the latest unchanged version is deduplicated");
+  assert.deepEqual((await recall(t)).map((item) => item.id), [reverted.id]);
+  const versions = await sql<{ id: string; previous_id: string | null; version_seq: number }[]>`
+    SELECT id, previous_id, version_seq FROM research_evidence WHERE url = ${url} ORDER BY version_seq`;
+  assert.deepEqual(versions.map((version) => [version.id, version.previous_id, version.version_seq]), [
+    [first.id, null, 1], [second.id, first.id, 2], [reverted.id, second.id, 3],
+  ]);
+  const revertedRun = await runFor(t);
+  assert.equal(new Set([firstRun, secondRun, revertedRun]).size, 3, "each acquired version changes the durable input key");
+  await executeRun(revertedRun, true);
+  assert.deepEqual((await briefFor(revertedRun)).input_ids, [reverted.id]);
+  assert.deepEqual((await briefFor(firstRun)).input_ids, [first.id]);
+  assert.ok((await briefFor(revertedRun)).output.changes.some((change) => change.includes("资料修订") && change.includes(reverted.id)));
 });
 
 test("same-input concurrent requests and worker retries produce one run and one brief", async () => {
@@ -241,7 +294,34 @@ test("raw corpus recall includes a low-score official release blocked by the pub
   assert.ok(brief.output.changes.some((change) => change.includes("首次取得资料")), "an old source newly found is not described as a new event");
   const publicSearch = await app.inject({ method: "GET", url: `/api/v1/items?mode=all&q=${encodeURIComponent(marker)}` });
   assert.equal(publicSearch.statusCode, 200, publicSearch.body);
-  assert.ok(!publicSearch.body.includes(marker));
+  assertEmptyPublicSearch(publicSearch.json(), marker, [marker, t.id, recalled[0].id, recalled[0].body]);
+
+  // Body extraction can change material without a new article revision. Returning to the first
+  // body must create a fresh acquisition version, rather than match an arbitrary historical body.
+  const firstRaw = recalled[0];
+  const secondBody = `Synthetic extracted body B ${marker}`;
+  await sql`UPDATE articles SET body_text = ${secondBody}, updated_at = now() WHERE id = ${articleId}`;
+  await syncCorpus();
+  const secondVersions = await sql<(Evidence & { version_seq: number; article_revision: number })[]>`
+    SELECT * FROM research_evidence WHERE article_id = ${articleId} ORDER BY version_seq`;
+  evidenceIds.push(...secondVersions.map((item) => item.id));
+  assert.equal(secondVersions.length, 2);
+  assert.equal(secondVersions[1].body, secondBody);
+  assert.equal(secondVersions[1].previous_id, firstRaw.id);
+  await sql`UPDATE articles SET body_text = ${firstRaw.body}, updated_at = now() WHERE id = ${articleId}`;
+  await syncCorpus();
+  const allVersions = await sql<(Evidence & { version_seq: number; article_revision: number })[]>`
+    SELECT * FROM research_evidence WHERE article_id = ${articleId} ORDER BY version_seq`;
+  evidenceIds.push(...allVersions.map((item) => item.id));
+  assert.equal(allVersions.length, 3);
+  assert.deepEqual(allVersions.map((item) => [item.body, item.version_seq, item.article_revision]), [
+    [firstRaw.body, 1, 1], [secondBody, 2, 1], [firstRaw.body, 3, 1],
+  ]);
+  assert.notEqual(allVersions[2].id, firstRaw.id);
+  assert.equal(allVersions[2].previous_id, secondVersions[1].id);
+  assert.deepEqual((await recall(t)).map((item) => item.id), [allVersions[2].id]);
+  const [material] = await sql<{ revision: number }[]>`SELECT revision FROM articles WHERE id = ${articleId}`;
+  assert.equal(material.revision, 1, "the source body cycle does not rely on the article revision changing");
 });
 
 test("macro/BTC synthetic flow retains contrary evidence and leaves surprise unknown without sourced consensus", async () => {
@@ -326,6 +406,10 @@ test("empty-corpus research acquires bounded public snippets and recovers a paid
   const { target: t, marker } = await target("ai", { publicTerms: ["synthetic public release"] });
   const runId = await runFor(t);
   assert.deepEqual((await runState(runId)).snapshot.evidenceIds, []);
+  // The page body arrives after this run's immutable corpus cutoff. Search can still refer to the
+  // same URL, but its provisional snippet must not replace the page body in the current corpus.
+  const sharedUrl = `https://example.org/${marker}/shared-original`;
+  const originalPage = await evidence(marker, { domain: "ai", url: sharedUrl, title: `已取得的合成正文 ${marker}`, body: `Synthetic full page body, distinct from the search excerpt. ${marker}`, source: "synthetic-original-page" });
   await sql`UPDATE research_runs SET max_calls = 2 WHERE id = ${runId}`;
   let sent = 0;
   let crashAfterReceipt = true;
@@ -334,7 +418,7 @@ test("empty-corpus research acquires bounded public snippets and recovers a paid
     const received = await paidRequest({ service: `research-adapter-${T}`, purpose: "research-test", subject: id, identity: { id, query }, beforeAttempt }, async () => {
       sent += 1;
       sentQueries.push(query);
-      return { response: { results: [{ title: query.includes("counter") ? `反例 ${marker}` : `公开原稿 ${marker}`, url: `https://example.org/${marker}/search-${sent}`, snippet: query.includes("counter") ? `counter evidence ${marker}` : `Original public release ${marker}` }] } };
+      return { response: { results: [{ title: query.includes("counter") ? `反例 ${marker}` : `公开原稿 ${marker}`, url: query.includes("counter") ? `https://example.org/${marker}/search-${sent}` : sharedUrl, snippet: query.includes("counter") ? `counter evidence ${marker}` : `Original public release ${marker}` }] } };
     });
     if (crashAfterReceipt) {
       crashAfterReceipt = false;
@@ -357,6 +441,20 @@ test("empty-corpus research acquires bounded public snippets and recovers a paid
   assert.equal((await runState(runId)).status, "completed");
   assert.equal(brief.mode, "演示资料 / 模拟分析");
   assert.equal(brief.input_ids.length, 2);
+  assert.ok(!brief.input_ids.includes(originalPage.id), "the later page body is not retroactively added to this run's original corpus snapshot");
+  const current = await recall(t);
+  assert.ok(current.some((item) => item.id === originalPage.id && item.body === originalPage.body));
+  const sharedEvidence = await sql<(Evidence & { identity: string })[]>`SELECT * FROM research_evidence WHERE url = ${sharedUrl}`;
+  evidenceIds.push(...sharedEvidence.map((item) => item.id));
+  assert.equal(sharedEvidence.length, 2, "a full page and a snippet of the same URL coexist as separate materials");
+  const snippet = sharedEvidence.find((item) => item.source.startsWith("synthetic-search:"));
+  assert.ok(snippet);
+  assert.notEqual(snippet.id, originalPage.id);
+  assert.ok(snippet.identity.startsWith("snippet:"));
+  assert.ok(current.some((item) => item.id === snippet.id), "provisional snippets remain inspectable without evicting the full body");
+  const currentAnalysis = fixtureAnalysis(current, []);
+  assert.ok(currentAnalysis.findings.some((finding) => finding.citations.some((citation) => citation.evidenceId === originalPage.id)), "when both are available, the fixture cites the full body for their shared origin");
+  assert.ok(!currentAnalysis.findings.some((finding) => finding.citations.some((citation) => citation.evidenceId === snippet.id)), "the same-origin snippet is not an independent replacement finding");
   assert.ok(brief.output.alternatives.some((finding) => finding.text.includes("反例")));
   const steps = (await runState(runId)).steps;
   assert.equal(steps.filter((step) => step.step === "search-evidence" && step.status === "snippet_unverified").length, 2);
@@ -518,12 +616,102 @@ test("private API requires a session, CSRF and same-site origin and keeps export
   targetIds.push(String(valid.json().id));
   const publicSearch = await app.inject({ method: "GET", url: `/api/v1/items?mode=all&q=${encodeURIComponent(marker)}`, headers: { cookie: headers.cookie } });
   assert.equal(publicSearch.statusCode, 200, publicSearch.body);
-  assert.ok(!publicSearch.body.includes(marker), "even an authenticated public query does not join private research");
+  assertEmptyPublicSearch(publicSearch.json(), marker, [marker, t.id, e.id, e.body, t.question, t.hypothesis!]);
   const projection = await sql`SELECT article_id FROM publications WHERE search_text LIKE ${`%${marker}%`}`;
   assert.equal(projection.length, 0);
   const snapshots = await app.inject({ method: "GET", url: "/api/v1/selected/snapshot" });
   assert.equal(snapshots.statusCode, 200, snapshots.body);
   assert.ok(!snapshots.body.includes(e.id) && !snapshots.body.includes(marker));
+});
+
+test("anonymous ID probes disclose no private detail or export, and authenticated paused targets resume only after activation", async () => {
+  const { target: t, marker } = await target();
+  await evidence(marker);
+  const initialRun = await runFor(t);
+  await executeRun(initialRun, true);
+  const privateBrief = await briefFor(initialRun);
+  const endpoints: { method: "GET" | "POST"; suffix: string; payload?: Record<string, unknown> }[] = [
+    { method: "GET", suffix: "" },
+    { method: "GET", suffix: "/export" },
+    { method: "GET", suffix: "/export?format=markdown" },
+    { method: "POST", suffix: "/run", payload: {} },
+    { method: "POST", suffix: "/actions", payload: { action: "confirm", briefId: privateBrief.id, note: "synthetic-anonymous-probe" } },
+  ];
+  for (const id of [t.id, "00000000-0000-4000-8000-000000000000"]) {
+    for (const endpoint of endpoints) {
+      const response = await app.inject({ method: endpoint.method, url: `/api/admin/research/targets/${id}${endpoint.suffix}`, payload: endpoint.payload });
+      assert.equal(response.statusCode, 401, `${endpoint.method} ${endpoint.suffix}: ${response.body}`);
+      assert.match(String(response.headers["cache-control"]), /no-store/);
+      assert.ok(!response.body.includes(marker) && !response.body.includes(privateBrief.id));
+    }
+  }
+  assert.equal((await sql`SELECT id FROM research_actions WHERE target_id = ${t.id}`).length, 0);
+  assert.equal((await sql`SELECT id FROM research_runs WHERE target_id = ${t.id}`).length, 1);
+  const headers = await auth();
+  const paused = await app.inject({ method: "POST", url: `/api/admin/research/targets/${t.id}/status`, headers, payload: { status: "paused" } });
+  assert.equal(paused.statusCode, 200, paused.body);
+  assert.equal(paused.json().status, "paused");
+  const newEvidence = await evidence(marker, { title: `暂停期间的合成更新 ${marker}`, body: `Synthetic update acquired during pause ${marker}` });
+  await scheduleTargets("synthetic-paused-target-test");
+  assert.equal(await requestRun(t.id, "synthetic-paused-request", false), null);
+  const blocked = await app.inject({ method: "POST", url: `/api/admin/research/targets/${t.id}/run`, headers, payload: {} });
+  assert.equal(blocked.statusCode, 404, blocked.body);
+  assert.equal((await sql`SELECT id FROM research_runs WHERE target_id = ${t.id}`).length, 1, "neither recurring nor manual requests create work while paused");
+  const resumed = await app.inject({ method: "POST", url: `/api/admin/research/targets/${t.id}/status`, headers, payload: { status: "active" } });
+  assert.equal(resumed.statusCode, 200, resumed.body);
+  assert.equal(resumed.json().status, "active");
+  const runs = await sql<{ id: string; status: string }[]>`SELECT id,status FROM research_runs WHERE target_id = ${t.id}`;
+  assert.equal(runs.length, 2);
+  const pending = runs.find((run) => run.id !== initialRun);
+  assert.ok(pending);
+  assert.equal(pending.status, "queued");
+  const repeated = await app.inject({ method: "POST", url: `/api/admin/research/targets/${t.id}/run`, headers, payload: {} });
+  assert.equal(repeated.statusCode, 200, repeated.body);
+  assert.equal(repeated.json().id, pending.id, "resuming and requesting the same input reuse the queued run");
+  await executeRun(pending.id, true);
+  assert.ok((await briefFor(pending.id)).input_ids.includes(newEvidence.id));
+});
+
+test("exploration stays populated without research targets and source failure does not rewrite evidence acquisition time", async () => {
+  assert.equal((await sql`SELECT id FROM research_targets`).length, 0, "this scenario starts without a watchlist or private questions");
+  const marker = `empty-radar-${T}-${tag()}`;
+  const sourceId = `synthetic-health-${marker}`;
+  const sourceName = `Synthetic failing source ${marker}`;
+  const lastOk = new Date("2001-01-01T00:00:00Z");
+  const failedFetch = new Date();
+  await sql`INSERT INTO sources (id,name,kind,enabled,health,fail_count,last_ok_at,last_fetch_at,last_error)
+    VALUES (${sourceId},${sourceName},'external',true,'failing',3,${lastOk},${failedFetch},'synthetic-fetch-failure')`;
+  sourceIds.push(sourceId);
+  const acquired = await evidence(marker, { source: sourceName, domain: "unknown", title: `合成缓存资料 ${marker}`, publishedAt: "1999-12-01T00:00:00Z" });
+  const radar = await overview();
+  assert.deepEqual(radar.capabilities, { corpus: "configured", officialFetch: "not_configured", webSearch: "not_configured", analysis: "not_configured" });
+  assert.equal(radar.targets.length, 0);
+  assert.equal(radar.radar.length, 0, "broad exploration does not invent a question-specific brief");
+  const exploration = radar.exploration.find((item) => item.id === acquired.id);
+  assert.ok(exploration, "newly acquired evidence can be explored before a target is created");
+  assert.equal(exploration.available_at.toISOString(), acquired.available_at.toISOString());
+  assert.equal(exploration.published_at?.toISOString(), "1999-12-01T00:00:00.000Z");
+  const health = radar.sourceHealth.find((source) => source.id === sourceId);
+  assert.ok(health);
+  assert.equal(health.health, "failing");
+  assert.equal(health.fail_count, 3);
+  assert.equal(health.last_ok_at.toISOString(), lastOk.toISOString());
+  assert.equal(health.last_fetch_at.toISOString(), failedFetch.toISOString());
+  const coverage = radar.coverage.find((source) => source.source === sourceName);
+  assert.ok(coverage);
+  assert.equal(coverage.last_success.toISOString(), acquired.available_at.toISOString(), "evidence acquisition coverage is independent of collector success");
+  assert.ok(coverage.last_success > health.last_ok_at);
+  assert.equal((await sql`SELECT id FROM research_runs`).length, 0, "exploration alone does not schedule private analysis");
+  process.env.RESEARCH_FETCH_ENABLED = "true";
+  process.env.RESEARCH_OFFICIAL_ENDPOINTS_JSON = JSON.stringify({ ai: ["https://example.org/synthetic-official-endpoint"] });
+  process.env.RESEARCH_SEARCH_ENABLED = "true";
+  process.env.RESEARCH_SEARCH_URL = "https://example.org/synthetic-search-endpoint";
+  process.env.RESEARCH_SOURCE_HOSTS = "example.org";
+  const disabled = await overview();
+  assert.equal(disabled.capabilities.officialFetch, "disabled", "configured official endpoints remain off while LIVE is false");
+  assert.equal(disabled.capabilities.webSearch, "disabled", "configured search endpoint and source hosts remain off while LIVE is false");
+  assert.equal(disabled.capabilities.analysis, "not_configured");
+  assert.equal((await sql`SELECT id FROM research_runs`).length, 0);
 });
 
 test("a confirmation cannot attach one target's private brief to another target", async () => {

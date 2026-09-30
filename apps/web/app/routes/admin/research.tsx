@@ -88,7 +88,7 @@ export default function Research({ loaderData }: Route.ComponentProps) {
     finally { setBusy(false); }
   }
   const capabilityLabels: Record<string,string> = { corpus: "已接入资料", officialFetch: "官方补证", webSearch: "开放搜索", analysis: "分析" };
-  const capability = (value: string) => value === "not_configured" || value === "none" ? "未配置" : value === "disabled" ? "已配置，开关关闭" : value === "fixture" ? "模拟分析" : value === "llm" ? "真实模型" : "可用";
+  const capability = (value: string) => value === "not_configured" || value === "none" ? "未配置" : value === "disabled" ? "已配置，开关关闭" : value === "network_blocked" ? "网络配置阻止外发" : value === "fixture" ? "模拟分析" : value === "llm" ? "真实模型" : "已接通（仍需实际调用验证）";
   return <div className="mx-auto max-w-5xl px-5 py-8 text-ink">
     <h1 className="text-2xl font-semibold">私人研究工作台</h1>
     <p className="mt-2 text-ink-3">政治、宏观、BTC、美股、AI 与创业 idea。问题即入口，假设可选。时间显示为 Pacific/Auckland。</p>
@@ -145,7 +145,8 @@ export default function Research({ loaderData }: Route.ComponentProps) {
       </div></div>)}
       <h3 className="mt-8 text-xl font-semibold">证据账本（含历史版本）</h3>
       {detail.evidence.map(e => <details id={`evidence-${e.id}`} key={e.id} className="my-3 rounded border border-line p-4">
-        <summary className="cursor-pointer">{e.title} · {e.mode === "demo" ? "合成演示" : "真实来源"}</summary>
+        <summary className="cursor-pointer">{e.title} · {e.mode === "demo" ? "合成演示" : /^(search-snippet|synthetic-search):/.test(e.source) ? "搜索片段，待核查原文" : "接入资料"}</summary>
+        <p className="my-2 text-sm text-ink-3">来源：{e.source}。保存内容可能为摘要或截断副本，请核对原文。</p>
         <a className="my-2 inline-block underline" href={e.url} target="_blank" rel="noreferrer">原文出处</a>
         <p className="text-sm text-ink-3">发布：{time(e.published_at, e.time_precision, e.time_metadata?.publishedRaw)} · 发生：{time(e.occurred_at, e.time_precision)}<br />来源时区：{e.time_metadata?.sourceTimezone ?? "未知"} · 取得：{time(e.available_at)} · 修订自：{e.previous_id?.slice(0,8) ?? "—"}</p>
         <pre className="my-3 whitespace-pre-wrap text-sm">{e.body}</pre>

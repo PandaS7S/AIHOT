@@ -12,6 +12,13 @@ const privateHandler=(fn:AdminHandler)=>adminHandler(async(req,reply,admin)=>{
  if(req.method!=='GET'&&req.method!=='HEAD'&&req.headers.origin && req.headers.origin!==new URL(config.siteUrl).origin)return reply.code(403).send({error:'forbidden'});
  try{return await fn(req,reply,admin);}catch{return reply.code(400).send({error:'invalid_request'});}
 });
+// Variable-length fences keep source text and private notes literal, including embedded Markdown.
+function codeBlock(value:unknown, language='json') {
+ const body=typeof value==='string'?value:JSON.stringify(value,null,2);
+ const longest=Math.max(2,...[...body.matchAll(/`+/g)].map(match=>match[0].length));
+ const fence='`'.repeat(longest+1);
+ return `${fence}${language}\n${body}\n${fence}`;
+}
 export function registerResearch(app:FastifyInstance) {
  app.get('/api/admin/research',privateHandler(async()=>overview()));
  app.post('/api/admin/research/source-presets',privateHandler(async()=>importResearchSources()));
@@ -49,8 +56,16 @@ export function registerResearch(app:FastifyInstance) {
  app.get('/api/admin/research/targets/:id/export',privateHandler(async(req,reply)=>{
  const d=await detail((req.params as {id:string}).id);if(!d)return reply.code(404).send({error:'not_found'});
  if((req.query as {format?:string}).format==='markdown') {
- const lines=[`# ${d.target.question}`,'',`假设（可选）：${d.target.hypothesis??'未填写'}`];
- for(const b of d.briefs) {lines.push('',`## ${b.created_at.toISOString()} · ${b.mode}`,JSON.stringify(b.output,null,2));}
+ const lines=['# 私人研究导出','', '## 当前研究版本',codeBlock(d.target)];
+ for(const b of d.briefs) {
+  lines.push('',`## 简报 ${b.id}`,codeBlock({createdAt:b.created_at,targetVersion:b.target_version,mode:b.mode,target:b.target_snapshot,inputIds:b.input_ids}),codeBlock(b.output));
+ }
+ lines.push('','## 证据账本（含历史输入版本）');
+ for(const e of d.evidence) {
+  const {body,...metadata}=e;
+  lines.push('',`### 证据 ${e.id}`,codeBlock(metadata),codeBlock(body,'text'));
+ }
+ lines.push('','## 执行记录',codeBlock(d.runs),'','## 反馈与结果',codeBlock(d.actions));
  return reply.type('text/markdown; charset=utf-8').header('Content-Disposition','attachment; filename="research.md"').send(lines.join('\n'));
  }
  return reply.header('Content-Disposition','attachment; filename="research.json"').send(d);

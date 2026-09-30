@@ -12,7 +12,12 @@ import { ingestEvidence, RESEARCH_QUEUE } from './store.ts';
 
 export function fixtureAnalysis(evidence:Evidence[],previousIds:string[]):Brief {
  const fresh=evidence.filter(e=>!previousIds.includes(e.id));
- const distinct=[...new Map(evidence.map(e=>[e.origin_key,e])).values()];
+ const byOrigin=new Map<string,Evidence>();
+ for(const e of evidence) {
+  const previous=byOrigin.get(e.origin_key);
+  if(!previous || !/^(search-snippet|synthetic-search):/.test(e.source))byOrigin.set(e.origin_key,e);
+ }
+ const distinct=[...byOrigin.values()];
  const facts=(es:Evidence[])=>es.slice(0,30).map(e=>({text:e.title,relation:'unknown' as const,citations:[{evidenceId:e.id,quote:e.body.slice(0,250)}],assumption:false}));
  const missingConsensus=evidence.some(e=>e.claims.some(c=>c.value!==null && (c.consensus===null || !c.consensusSource)));
  return {findings:facts(distinct),changes:fresh.slice(0,20).map(e=>`${e.previous_id?'资料修订':'首次取得资料'}：${e.title}（发生时间与取得时间分别记录） [${e.id}]`),alternatives:facts(distinct.filter(e=>/反例|冲突|暂停|成本未变|counter|suspend/i.test(e.title+' '+e.body))).slice(0,20),conflicts:distinct.some(e=>/暂停|冲突|counter|suspend/i.test(e.body))?[`支持材料与相反材料并存；示例分析不作因果判断。 ${distinct.slice(0,10).map(e=>`[${e.id}]`).join(' ')}`]:[],unknowns:[...(missingConsensus?['缺少有来源的共识预期；预期差未知。']:[]),'模拟分析只核查已接入资料；搜索片段是待核实线索。','合成分析只验证流程；引用语义与因果解释仍需人工复核。',...(distinct.length>30||fresh.length>20?['简报只展示部分候选；全部输入版本保留在证据账本。']:[]),...(evidence.some(e=>/价格|pricing|cost|成本/i.test(e.body))?['模型单价不足以确定总交付成本、买家需求与创业机会；人工审核成本与现有替代仍须验证。']:[])],nextChecks:['核对原文、独立来源与相反解释；保留提案/通过/生效/暂停阶段。']};
@@ -35,7 +40,8 @@ export async function executeRun(runId:string, fixture=false, adapters:ResearchA
  const [run]=await sql<Run[]>`SELECT * FROM research_runs WHERE id=${runId}`;
  if(!run||!['queued','running'].includes(run.status))return;
  const t=run.snapshot.target;
- await sql`UPDATE research_runs SET status='running',stop_reason=NULL WHERE id=${runId}`;
+ const [started]=await sql`UPDATE research_runs SET status='running',stop_reason=NULL WHERE id=${runId} AND status IN ('queued','running') RETURNING id`;
+ if(!started)return;
  const steps=[...run.steps];
  const deadline=Date.now()+150000;
  const checkpoint=async()=>{if(Date.now()>deadline)throw new Error('time_budget_exhausted');const [r]=await sql`SELECT status FROM research_runs WHERE id=${runId}`;if(r?.status==='cancelled')throw new Error('cancelled');};

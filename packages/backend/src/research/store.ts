@@ -2,6 +2,8 @@ import { randomUUID, createHash } from 'node:crypto';
 import { sql, type Db } from '../db.ts';
 import { normalizeUrl } from '../lib/url.ts';
 import { enqueue } from '../jobs/queue.ts';
+import { config, credential } from '../config.ts';
+import { searchConfigured } from './search.ts';
 import { DOMAINS, evidenceSchema, targetSchema, type Evidence, type Target } from './schema.ts';
 export const RESEARCH_QUEUE='research.run';
 export const hash=(v:unknown)=>createHash('sha256').update(JSON.stringify(v)).digest('hex');
@@ -30,8 +32,10 @@ export async function updateTarget(id: string, raw: unknown): Promise<Target | n
 export async function ingestEvidence(raw:unknown, extra:{articleId?:string;revision?:number}={}, db:Db=sql):Promise<Evidence> {
  if(db===sql)return sql.begin(tx=>ingestEvidence(raw,extra,tx)) as Promise<Evidence>;
  const d=evidenceSchema.parse(raw); const url=normalizeUrl(d.url); if(!url)throw new Error('invalid_url');
- const identity=extra.articleId?`article:${extra.articleId}`:url;
- const h=hash([d.title,d.body,d.claims,d.publishedAt,d.occurredAt,d.timePrecision,d.originKey??url,d.domain,d.source,d.mode,d.timeMetadata]);
+ // A search excerpt must not replace the acquired source document at the same URL.
+ const snippet=/^(search-snippet|synthetic-search):/.test(d.source);
+ const identity=extra.articleId?`article:${extra.articleId}`:snippet?`snippet:${url}`:url;
+ const h=hash([d.title,d.body,d.claims,d.publishedAt,d.occurredAt,d.timePrecision,d.originKey??url,d.domain,d.source,d.mode,d.timeMetadata,extra.revision??null]);
  // Immutable versions; never overwrite available_at with an asserted publication date.
  await db`SELECT pg_advisory_xact_lock(hashtext(${identity}))`;
  const [previous]=await db<(Evidence & {content_hash:string;version_seq:number})[]>`SELECT * FROM research_evidence WHERE identity=${identity} ORDER BY version_seq DESC LIMIT 1`;
@@ -75,10 +79,14 @@ export async function scheduleTargets(trigger:string) {
 /** Called on a recurring sweep: body extraction may update without an article revision. */
 export async function syncCorpus() {
  const articles=await sql<{id:string;revision:number;title:string;url:string;source:string;body:string;published_at:Date|null;domain:string}[]>`
- SELECT a.id,a.revision,left(a.title,600) title,a.url,s.name source,left(coalesce(nullif(a.body_text,''),nullif(a.excerpt,''),a.title),50000) body,a.published_at,coalesce(s.config->>'researchDomain','unknown') domain
- FROM articles a JOIN sources s ON a.source_id=s.id
- WHERE NOT EXISTS(SELECT 1 FROM research_evidence e WHERE e.article_id=a.id AND e.article_revision=a.revision AND e.body=left(coalesce(nullif(a.body_text,''),nullif(a.excerpt,''),a.title),50000) AND e.title=left(a.title,600))
- ORDER BY a.updated_at DESC LIMIT 100`;
+ WITH current AS (
+  SELECT a.id,a.revision,left(a.title,600) title,a.url,s.name source,left(coalesce(nullif(a.body_text,''),nullif(a.excerpt,''),a.title),50000) body,a.published_at,a.updated_at,
+  CASE WHEN s.config->>'researchDomain'=ANY(${[...DOMAINS]}::text[]) THEN s.config->>'researchDomain' ELSE 'unknown' END domain
+  FROM articles a JOIN sources s ON a.source_id=s.id
+ ) SELECT c.* FROM current c
+ LEFT JOIN LATERAL (SELECT * FROM research_evidence WHERE identity='article:'||c.id ORDER BY version_seq DESC LIMIT 1) e ON true
+ WHERE e.id IS NULL OR (e.article_revision,e.body,e.title,e.domain,e.source,e.published_at) IS DISTINCT FROM (c.revision,c.body,c.title,c.domain,c.source,c.published_at)
+ ORDER BY c.updated_at DESC LIMIT 100`;
  for(const a of articles)await sql.begin(tx=>ingestEvidence({title:a.title,url:a.url,source:a.source,body:a.body,domain:DOMAINS.includes(a.domain as (typeof DOMAINS)[number])?a.domain:'unknown',publishedAt:a.published_at?.toISOString()??null,timePrecision:'unknown',mode:'source'}, {articleId:a.id,revision:a.revision},tx));
  await scheduleTargets('corpus-sweep');
  // Recover a committed run whose process died before enqueuing, without reopening terminal failures.
@@ -95,7 +103,22 @@ export async function overview() {
  sql`SELECT id,title,url,source,mode,domain,available_at,published_at,previous_id FROM research_evidence ORDER BY available_at DESC LIMIT 15`,
  sql`SELECT id,name,health,last_fetch_at,last_ok_at,fail_count FROM sources WHERE enabled ORDER BY name`
  ]);
- return {targets,radar,runs,coverage,exploration,sourceHealth,capabilities:{corpus:'configured',officialFetch:process.env.RESEARCH_FETCH_ENABLED==='true'?'configured':'not_configured',webSearch:process.env.RESEARCH_SEARCH_ENABLED==='true'&&process.env.RESEARCH_SEARCH_URL?'configured (opt-in public terms only)':'not_configured',analysis:process.env.RESEARCH_PROVIDER??'not_configured'}, timezone:'Pacific/Auckland'};
+ const live=process.env.RESEARCH_LIVE_ENABLED==='true'&&config.modelCallsEnabled;
+ const networkSafe=!config.allowPrivateNetworkFetch&&!config.egressProxyUrl;
+ let hasOfficial=false;
+ try {
+  const endpoints:unknown=JSON.parse(process.env.RESEARCH_OFFICIAL_ENDPOINTS_JSON??'{}');
+  hasOfficial=!!endpoints&&typeof endpoints==='object'&&Object.values(endpoints).some(values=>Array.isArray(values)&&values.some(value=>{
+   if(typeof value!=='string')return false;
+   try {const url=new URL(value);return url.protocol==='https:'&&!url.username&&!url.password;}catch{return false;}
+  }));
+ }catch { /* Invalid configuration must not break the private overview. */ }
+ const externalState=(configured:boolean)=>!configured?'not_configured':!live?'disabled':!networkSafe?'network_blocked':'configured';
+ const provider=process.env.RESEARCH_PROVIDER;
+ const modelConfigured=!!process.env.LLM_MODEL&&!!credential('models','LLM_BASE_URL')&&!!credential('models','LLM_API_KEY');
+ const analysis=provider==='fixture'?(process.env.RESEARCH_DEMO_ENABLED==='true'?'fixture':'disabled')
+  :provider==='llm'?(modelConfigured?(live?'llm':'disabled'):'not_configured'):'not_configured';
+ return {targets,radar,runs,coverage,exploration,sourceHealth,capabilities:{corpus:'configured',officialFetch:externalState(process.env.RESEARCH_FETCH_ENABLED==='true'&&hasOfficial),webSearch:externalState(searchConfigured()),analysis}, timezone:'Pacific/Auckland'};
 }
 export async function detail(id:string) {
  const [target]=await sql`SELECT * FROM research_targets WHERE id=${id}`;if(!target)return null;
