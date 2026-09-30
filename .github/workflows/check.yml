@@ -30,11 +30,18 @@ jobs:
         options: >-
           --health-cmd "pg_isready -U postgres" --health-interval 2s --health-timeout 5s --health-retries 30
     env:
+      RESEARCH_LIVE_ENABLED: "false"
+      RESEARCH_FETCH_ENABLED: "false"
+      RESEARCH_PROVIDER: "none"
+      FEISHU_CONTENT_PUSH_ENABLED: "false"
+      FEISHU_INTERNAL_ENABLED: "false"
+      INDEXNOW_SUBMIT_ENABLED: "false"
       DATABASE_URL: postgres://postgres:ci@127.0.0.1:5432/aihot_ci
       SITE_URL: http://127.0.0.1:3000
       API_BASE_URL: http://127.0.0.1:3001
       SESSION_SECRET: ci-session-secret-0123456789abcdef
       IMG_PROXY_SIGN_SECRET: ci-img-secret-0123456789abcdef
+      ADMIN_PASSWORD: synthetic-ci-research-password-0123456789
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -55,6 +62,8 @@ jobs:
         run: |
           node scripts/migrate.ts
           node scripts/seed.ts --topics-only
+      - name: Synthetic research flows (no external calls)
+        run: node scripts/research-demo.ts
       - name: Smoke check of the built site
         # The site itself runs with collection and model calls off (the tests below use local stubs).
         env:
@@ -66,6 +75,7 @@ jobs:
           for i in $(seq 1 60); do curl -fsS -o /dev/null http://127.0.0.1:3000/api/health 2>/dev/null && break; sleep 1; done
           node scripts/smoke.ts --base http://127.0.0.1:3000
           node scripts/mcp-check.ts http://127.0.0.1:3000/api/mcp
+          node scripts/research-smoke.ts
       # After the smoke check, which reads an empty database: these write their own rows.
       - name: Backend tests
         run: npm test

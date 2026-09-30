@@ -1,3 +1,11 @@
+# Research Desk（工作名）
+
+本 fork 增加单人私人研究工作台，面向政治、宏观、BTC、美股、AI 与创业问题。入口 `/admin/research`；包括变化雷达、专题、证据版本、反例补查、任务状态与私人导出。真实服务默认关闭，当前代码与合成演示不代表已经部署或模型研究质量已验证。见 [私人研究配置与边界](docs/research.md)。
+
+以下保留上游框架说明及归属。
+
+---
+
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/assets/banner-dark.png">
